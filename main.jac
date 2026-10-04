@@ -11,6 +11,7 @@ graph out for the UI. byLLM turns plain English into typed plan graphs.
 
 import os;
 import re;
+import json;
 import from datetime { datetime, timedelta }
 import from jaclang.byllm.lib { Model, ModelPool }
 import from frontend { app as ClientApp }
@@ -26,7 +27,8 @@ def pick_llm -> any {
             names.append(preferred);
         }
         names.extend(
-            ["gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash-lite", "gemini/gemini-2.0-flash"]
+            # verified against a live key (Oct 2026); 2.0-flash / 2.5-flash-lite are retired
+            ["gemini/gemini-3.5-flash-lite", "gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview"]
         );
     }
     if os.getenv("ANTHROPIC_API_KEY") {
@@ -45,7 +47,7 @@ def pick_llm -> any {
         models=[Model(model_name=n) for n in unique],
         strategy="fallback",
         num_retries=0,      # don't hammer an overloaded model; move to the next one
-        timeout=25.0
+        timeout=20.0
     );
 }
 
@@ -301,6 +303,11 @@ enum Kind { ASSIGNMENT, BILL, ERRAND, CHORE, APPOINTMENT, WORK, HEALTH, SOCIAL, 
 
 enum Repeat { NONE, DAILY, WEEKLY, MONTHLY }
 
+sem Repeat.NONE = "One-off; does not recur.";
+sem Repeat.DAILY = "Recurs every day.";
+sem Repeat.WEEKLY = "Recurs every week (e.g. laundry, weekly quiz).";
+sem Repeat.MONTHLY = "Recurs every month, e.g. 'on the 1st every month', rent, phone bill, subscriptions.";
+
 obj StepDraft {
     has key: str,
         title: str,
@@ -331,13 +338,13 @@ obj PlanDraft {
 }
 
 sem PlanDraft.goal_key = "Key of the final step: the thing the user actually asked about.";
-sem PlanDraft.steps = "The goal plus every prerequisite needed to finish it, ordered so prerequisites come first. Include only real, distinct steps (usually 1-6).";
-sem PlanDraft.question = "ONE short follow-up question about a prerequisite or detail the user did not mention that would change the plan (e.g. 'Do you need to download a dataset first?'). Empty string if the plan is already clear or the answers already cover it.";
+sem PlanDraft.steps = "The goal plus every realistic prerequisite needed to finish it, ordered so prerequisites come first. Think like a careful student/adult: assignments need work before submission, returns need packing and a label, payments may need a transfer first. Usually 2-6 distinct steps.";
+sem PlanDraft.question = "ONE short follow-up question about a prerequisite or detail the user did not mention that would change the plan (e.g. 'Do you need to download a dataset first?', 'Do you still need to print the return label?'). When `answers` is empty you MUST ask a question. Return an empty string only after the answers already cover the prerequisites.";
 sem PlanDraft.summary = "One friendly sentence describing the plan.";
 
 def draft_plan(
     request: str, now: str, answers: list[str], existing_open_items: list[str]
-) -> PlanDraft by llm();
+) -> PlanDraft by llm(max_output_retries=1);
 
 sem draft_plan = "Turn something the user needs to accomplish into a dependency plan. Think about what really has to happen first (prerequisites) and resolve relative dates like 'Friday' or 'the 1st' against now. Reuse an existing open item (refer to it by its id in depends_on) instead of duplicating it.";
 sem draft_plan.request = "What the user said they need to do.";
@@ -372,7 +379,7 @@ sem Pick.why = "One short sentence: why this one now (deadline pressure, unblock
 
 def advise(
     now: str, minutes_available: int, situation: str, candidates: list[Candidate]
-) -> Advice by llm();
+) -> Advice by llm(max_output_retries=1);
 
 sem advise = "Act as a sharp personal chief of staff. From the ready-to-start candidates, choose what the user should do right now given their available time and situation. Respect deadlines (low or negative slack_min is urgent), prefer tasks that unlock many others, prefer tasks that fit the available minutes, and batch errands at the same location.";
 sem advise.minutes_available = "Minutes the user has right now; 0 means not specified.";
@@ -563,24 +570,37 @@ walker:protect DraftPlan {
 
 """Persist a (possibly user-edited) plan as nodes + DependsOn edges."""
 walker:protect CommitPlan {
-    has plan: PlanView,
+    has plan_json: str,     # PlanView serialized by the browser (JSON.stringify)
         now: str = "",
         reports: list[list[Item]] = [];
 
     can commit with Root entry {
+        data: dict[str, any] = json.loads(self.plan_json);
+        goal_key = str(data.get("goal_key", ""));
+        steps: list[dict[str, any]] = data.get("steps", []);
         by_key: dict[str, Item] = {};
-        for s in self.plan.steps {
-            by_key[s.key] = here ++> Item(
-                title=s.title, kind=s.kind, due=s.due, effort_min=s.effort_min,
-                repeat=s.repeat, location=s.location, notes=s.reason,
-                is_goal=(s.key == self.plan.goal_key), created_at=self.now
+        for s in steps {
+            key = str(s.get("key", ""));
+            if not key or not s.get("title") {
+                continue;
+            }
+            by_key[key] = here ++> Item(
+                title=str(s["title"]), kind=str(s.get("kind", "other")),
+                due=str(s.get("due", "") or ""), effort_min=int(s.get("effort_min", 30) or 30),
+                repeat=str(s.get("repeat", "none")), location=str(s.get("location", "") or ""),
+                notes=str(s.get("reason", "") or ""), is_goal=(key == goal_key),
+                created_at=self.now
             );
         }
-        for s in self.plan.steps {
-            for k in s.depends_on {
-                target = by_key.get(k) or find_item(here, k);
+        for s in steps {
+            src = by_key.get(str(s.get("key", "")));
+            if src is None {
+                continue;
+            }
+            for k in s.get("depends_on", []) {
+                target = by_key.get(str(k)) or find_item(here, str(k));
                 if target {
-                    link(by_key[s.key], target, s.reason);
+                    link(src, target, str(s.get("reason", "") or ""));
                 }
             }
         }
@@ -646,8 +666,10 @@ walker:protect CompleteItem {
             }
             visit [<-:DependsOn:<-][?:Item];
         } elif not here.done and all([d.done for d in deps_of(here)]) {
-            # A dependent whose last blocker just disappeared.
-            self.result.unlocked.append(here);
+            # A dependent whose last blocker just disappeared (dedupe: it can be reached twice).
+            if jid(here) not in [jid(u) for u in self.result.unlocked] {
+                self.result.unlocked.append(here);
+            }
         }
     }
 

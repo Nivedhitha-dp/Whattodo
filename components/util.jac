@@ -41,3 +41,85 @@ def:pub kind_icon(kind: str) -> str {
     };
     return icons[kind] if kind in icons else "•";
 }
+
+# ---------------------------------------------------------------------------
+# Voice (Web Speech API -- runs entirely in the browser, Chrome/Edge/Safari)
+# ---------------------------------------------------------------------------
+
+glob voice_state: dict[str, any] = {"rec": None};
+
+def:pub speech_supported -> bool {
+    w: any = window;   # speech APIs are missing from the DOM typings
+    return Boolean(w.SpeechRecognition or w.webkitSpeechRecognition);
+}
+
+"""Listen once. `on_interim(text)` streams partial text; `on_done(text, error)` fires when speech ends."""
+def:pub listen(on_interim: any, on_done: any) {
+    w: any = window;
+    Ctor = w.SpeechRecognition or w.webkitSpeechRecognition;
+    if not Ctor {
+        on_done.call(None, "", "unsupported");
+        return;
+    }
+    rec = new(Ctor);
+    rec.lang = "en-US";
+    rec.interimResults = True;
+    rec.continuous = False;
+    heard = {"text": "", "error": ""};
+    rec.onresult = lambda (e: any) {
+        t = "";
+        for r in Array.from(e.results) {
+            t = t + String(r[0].transcript);
+        }
+        heard["text"] = t;
+        on_interim.call(None, t);
+    };
+    rec.onerror = lambda (e: any) { heard["error"] = String(e.error); };
+    rec.onend = lambda {
+        voice_state["rec"] = None;
+        on_done.call(None, heard["text"], heard["error"]);
+    };
+    voice_state["rec"] = rec;
+    rec.start();
+}
+
+"""Read `text` aloud, then call `on_done()` exactly once -- even if the browser
+never fires `onend` (a known Chrome quirk) or speech synthesis fails entirely."""
+def:pub speak(text: str, on_done: any) {
+    w: any = window;
+    state = {"done": False};
+    def finish {
+        if not state["done"] {
+            state["done"] = True;
+            on_done.call(None);
+        }
+    }
+    synth = w.speechSynthesis;
+    if not synth or not w.SpeechSynthesisUtterance {
+        finish();
+        return;
+    }
+    try {
+        synth.cancel();
+        u = new(w.SpeechSynthesisUtterance, text);
+        u.lang = "en-US";
+        u.rate = 1.05;
+        u.onend = lambda { finish(); };
+        u.onerror = lambda { finish(); };
+        synth.speak(u);
+        # safety net: ~0.45s per word + 3s
+        setTimeout(lambda { finish(); }, len(text.split(" ")) * 450 + 3000);
+    } except Exception as e {
+        finish();
+    }
+}
+
+def:pub stop_voice {
+    if voice_state["rec"] {
+        voice_state["rec"].stop();
+    }
+    w: any = window;
+    if w.speechSynthesis {
+        w.speechSynthesis.cancel();
+    }
+}

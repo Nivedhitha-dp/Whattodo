@@ -21,6 +21,7 @@ calls and the React UI — and deployed on **[JacHammer](https://jachammer.ai)**
 | | |
 |---|---|
 | 🧠 **AI planning interview** | A sentence becomes a typed dependency plan (`by llm()` → `PlanDraft`). The AI asks one follow-up question ("Do you need to download a dataset first?"), you answer, it refines. It reuses your existing items instead of duplicating them. |
+| 🎙 **Hands-free voice planning** | Tap 🎤 and say "Return my Amazon order before Wednesday". LifeFlow plans it, **reads its follow-up question aloud, then listens for your answer** and refines. Uses the browser's Web Speech API (Chrome/Edge/Safari), so it adds no server cost or API key. |
 | ⚡ **What now?** | "I have 30 min, at home": graph analysis ranks every *unblocked* task by deadline pressure and how much it unlocks. The LLM then picks 1–3 and explains why. If no AI is available, you still get the graph ranking. |
 | ⏱ **Deadline propagation** | Deadlines flow *backwards* through dependencies. If HW2 is due Fri 23:59 and the report takes 2.5h, the experiment has to be done earlier still. Each task gets a computed **start-by** time and slack, and is flagged *behind schedule* before it's actually late. |
 | 🔓 **Unlock cascade** | Completing a task walks back up the dependency edges and tells you what just became available: *"✓ Run experiment 🔓 unlocked: Write HW2 report"*. |

@@ -24,9 +24,15 @@ def:pub NowPanel(onChange: Callable[[], None]) -> JsxElement {
 
     async def ask {
         thinking = True;
+        toast = "";
         mins = int(minutes) if minutes else 0;
-        res = root spawn WhatNow(now=local_now(), minutes=mins, situation=situation);
-        view = res.reports[0] if res.reports else view;
+        try {
+            res = root spawn WhatNow(now=local_now(), minutes=mins, situation=situation);
+            view = res.reports[0] if res.reports else view;
+        } except Exception as e {
+            toast = "The AI took too long to answer. Showing the graph ranking instead.";
+            await refresh();
+        }
         thinking = False;
     }
 
