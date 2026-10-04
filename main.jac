@@ -10,26 +10,43 @@ graph out for the UI. byLLM turns plain English into typed plan graphs.
 """
 
 import os;
+import re;
 import from datetime { datetime, timedelta }
 import from jaclang.byllm.lib { Model, ModelPool }
 import from frontend { app as ClientApp }
 
-"""Use whichever provider key is configured; with both, fall back Gemini -> Claude."""
+"""Every configured model, in fallback order. Gemini 503s ("model overloaded") are
+common, so several Gemini models are chained, then Claude if that key exists.
+LIFEFLOW_GEMINI_MODEL / LIFEFLOW_CLAUDE_MODEL put a preferred model first."""
 def pick_llm -> any {
-    models: list[any] = [];
+    names: list[str] = [];
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") {
-        models.append(Model(model_name=os.getenv("LIFEFLOW_GEMINI_MODEL", "gemini/gemini-2.5-flash")));
+        preferred = os.getenv("LIFEFLOW_GEMINI_MODEL", "");
+        if preferred {
+            names.append(preferred);
+        }
+        names.extend(
+            ["gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash-lite", "gemini/gemini-2.0-flash"]
+        );
     }
     if os.getenv("ANTHROPIC_API_KEY") {
-        models.append(Model(model_name=os.getenv("LIFEFLOW_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")));
+        names.append(os.getenv("LIFEFLOW_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6"));
     }
-    if len(models) == 0 {
+    unique: list[str] = [];
+    for n in names {
+        if n not in unique {
+            unique.append(n);
+        }
+    }
+    if len(unique) == 0 {
         return Model(model_name="gemini/gemini-2.5-flash");  # calls fail gracefully until a key is set
     }
-    if len(models) == 1 {
-        return models[0];
-    }
-    return ModelPool(models=models, strategy="fallback");
+    return ModelPool(
+        models=[Model(model_name=n) for n in unique],
+        strategy="fallback",
+        num_retries=2,
+        timeout=45.0
+    );
 }
 
 glob llm = pick_llm();
@@ -366,11 +383,25 @@ sem Candidate.unlocks = "How many other open tasks are waiting on this one.";
 """Short, user-facing description of an LLM failure."""
 def ai_error_text(e: Exception) -> str {
     msg = str(e);
-    if "API key" in msg or "api_key" in msg or "AuthenticationError" in msg {
+    if "Missing" in msg and ("API key" in msg or "api_key" in msg) {
         return "No AI key configured on the server. Set GEMINI_API_KEY or ANTHROPIC_API_KEY and restart.";
     }
-    first = msg.splitlines()[0] if msg else "";
-    return f"The AI model failed ({type(e).__name__}): {first[:160]}";
+    if "API_KEY_INVALID" in msg or "API key not valid" in msg or "AuthenticationError" in msg or "invalid x-api-key" in msg {
+        return "The AI provider rejected the API key. Check the key's value (no quotes/spaces) and redeploy.";
+    }
+    if "No deployments available" in msg or "cooldown" in msg {
+        return "All AI models are briefly cooling down after errors. Try again in a few seconds.";
+    }
+    if "503" in msg or "overloaded" in msg or "UNAVAILABLE" in msg {
+        return "The AI provider is overloaded right now (503). Try again in a moment.";
+    }
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg {
+        return "AI rate limit / quota reached (429). Wait a minute or check your API plan.";
+    }
+    flat = " ".join(msg.split());
+    found = re.search(r'"message":\s*"([^"]+)"', flat);
+    detail = found.group(1) if found else flat;
+    return f"The AI model failed ({type(e).__name__}): {detail[:220]}";
 }
 
 def enum_name(v: any) -> str {
