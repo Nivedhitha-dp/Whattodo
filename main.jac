@@ -44,8 +44,8 @@ def pick_llm -> any {
     return ModelPool(
         models=[Model(model_name=n) for n in unique],
         strategy="fallback",
-        num_retries=2,
-        timeout=45.0
+        num_retries=0,      # don't hammer an overloaded model; move to the next one
+        timeout=25.0
     );
 }
 
