@@ -42,7 +42,7 @@ def:pub PlanPanel(onSaved: Callable[[], None]) -> JsxElement {
                 error = "The planner returned nothing. Please try again.";
             }
         } except Exception as e {
-            error = "The server took too long or failed to respond. Please try again.";
+            error = "The server took too long or failed to respond. Please try again. (" + String(e)[:180] + ")";
         }
         busy = False;
         if voice and fresh {
@@ -139,7 +139,7 @@ def:pub PlanPanel(onSaved: Callable[[], None]) -> JsxElement {
             root spawn CommitPlan(plan_json=JSON.stringify(plan), now=local_now());
         } except Exception as e {
             busy = False;
-            error = "Saving failed. Please try again.";
+            error = "Saving failed. Please try again. (" + String(e)[:180] + ")";
             return;
         }
         busy = False;

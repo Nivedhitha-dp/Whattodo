@@ -25,6 +25,12 @@ typescript = "^5.3.3"
 [dev-dependencies]
 watchdog = ">=3.0.0"
 
+# JacHammer's proxy decompresses gzip but keeps the Content-Encoding header, so
+# browsers fail with ERR_CONTENT_DECODING_FAILED on responses > 1 KB. Let the
+# platform handle compression instead.
+[serve.compression]
+enabled = false
+
 [byllm.model]
 default_model = "gemini/gemini-2.5-flash"
 

@@ -30,7 +30,7 @@ def:pub NowPanel(onChange: Callable[[], None]) -> JsxElement {
             res = root spawn WhatNow(now=local_now(), minutes=mins, situation=situation);
             view = res.reports[0] if res.reports else view;
         } except Exception as e {
-            toast = "The AI took too long to answer. Showing the graph ranking instead.";
+            toast = "The AI took too long to answer. Showing the graph ranking instead. (" + String(e)[:140] + ")";
             await refresh();
         }
         thinking = False;
